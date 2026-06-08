@@ -28,13 +28,14 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Option<(StatusCode, Json<ApiError>)> {
-    let Some(ref key) = state.api_key else {
-        return None;
-    };
+    let key = state.api_key.as_ref()?;
     let provided = headers
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
@@ -100,7 +101,9 @@ pub async fn embeddings(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: e.to_string() }),
+            Json(ApiError {
+                error: e.to_string(),
+            }),
         )
             .into_response(),
     }
@@ -148,7 +151,9 @@ pub async fn rerank(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: e.to_string() }),
+            Json(ApiError {
+                error: e.to_string(),
+            }),
         )
             .into_response(),
     }
@@ -156,10 +161,7 @@ pub async fn rerank(
 
 // ── /v1/health ────────────────────────────────────────────────────────────────
 
-pub async fn health(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     if let Some(err) = check_auth(&state, &headers) {
         return err.into_response();
     }

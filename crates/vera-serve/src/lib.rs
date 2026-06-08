@@ -54,7 +54,10 @@ pub async fn run_server(
     host: &str,
     port: u16,
 ) -> Result<()> {
-    eprintln!("vera serve: initializing {} backend…", backend_label(backend));
+    eprintln!(
+        "vera serve: initializing {} backend…",
+        backend_label(backend)
+    );
 
     let (embedding_provider, model_name) =
         vera_core::embedding::create_dynamic_provider(&config, backend)
