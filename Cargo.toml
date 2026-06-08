@@ -3,6 +3,7 @@ members = [
     "crates/vera-core",
     "crates/vera-cli",
     "crates/vera-mcp",
+    "crates/vera-serve",
     "eval",
 ]
 resolver = "2"
@@ -39,3 +40,4 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 
 # Internal crates
 vera-core = { path = "crates/vera-core" }
+vera-serve = { path = "crates/vera-serve" }

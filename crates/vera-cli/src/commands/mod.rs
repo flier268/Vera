@@ -15,6 +15,7 @@ pub mod repair;
 pub mod search;
 pub mod setup;
 pub mod stats;
+pub mod serve;
 pub mod uninstall;
 pub mod update;
 pub mod upgrade;

@@ -90,6 +90,61 @@ enum Commands {
                       vera mcp                       # Start MCP server on stdio")]
     Mcp,
 
+    /// Start the Vera HTTP API server for remote embedding and reranking.
+    ///
+    /// Loads the configured embedding model and reranker once, then exposes
+    /// OpenAI-compatible /v1/embeddings and /v1/rerank endpoints so that any
+    /// standard vera client can connect via `vera setup --api`.
+    ///
+    /// Examples:
+    ///   vera serve --onnx-jina-cuda         # GPU host (NVIDIA)
+    ///   vera serve --onnx-jina-cpu          # CPU host
+    ///   vera serve --host 0.0.0.0 --port 8080
+    ///   vera serve --api-key some-api-key
+    #[command(long_about = "Start the Vera HTTP API server.\n\n\
+                      Loads the embedding model and reranker ONCE at startup (using the \
+                      selected backend), then exposes them via HTTP so any unmodified \
+                      vera client can use this host for compute.\n\n\
+                      Standard client setup (no client changes needed):\n  \
+                      1. Start server:  vera serve --onnx-jina-cuda\n  \
+                      2. Configure client:\n  \
+                         export EMBEDDING_MODEL_BASE_URL=http://host:3000/v1\n  \
+                         export EMBEDDING_MODEL_ID=<model-name-shown-at-startup>\n  \
+                         export EMBEDDING_MODEL_API_KEY=<api-key-if-set>\n  \
+                         vera setup --api\n  \
+                      3. Use normally:  vera index . && vera search \"auth\"\n\n\
+                      Authentication: --api-key (or VERA_SERVE_KEY env var).\n\n\
+                      Endpoints:\n  \
+                      POST /v1/embeddings    — OpenAI-compatible embeddings\n  \
+                      POST /v1/rerank        — Cohere/Jina-compatible reranker\n  \
+                      GET  /v1/health        — model info and liveness\n\n\
+                      Examples:\n  \
+                      vera serve                              # CPU (saved config), port 3000\n  \
+                      vera serve --onnx-jina-cuda             # NVIDIA GPU\n  \
+                      vera serve --onnx-jina-rocm             # AMD GPU\n  \
+                      vera serve --host 0.0.0.0 --port 8080  # Expose to network\n  \
+                      vera serve --api-key some-api-key             # Require bearer token")]
+    Serve {
+        /// TCP port to listen on.
+        #[arg(long, default_value = "3000")]
+        port: u16,
+
+        /// Bind address.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Bearer token required from clients (or set VERA_SERVE_KEY env var).
+        #[arg(long)]
+        api_key: Option<String>,
+
+        #[command(flatten)]
+        backend: helpers::LocalBackendFlags,
+
+        /// Use API-backed embeddings/reranking (reads from environment).
+        #[arg(long, group = "backend")]
+        api: bool,
+    },
+
     /// Install or manage the Vera skill for supported coding agents.
     ///
     /// This is the preferred agent integration path. It writes the canonical
@@ -656,6 +711,7 @@ fn main() {
     let show_nudges = !matches!(
         cli.command,
         Commands::Mcp
+            | Commands::Serve { .. }
             | Commands::Agent { .. }
             | Commands::Uninstall
             | Commands::Upgrade { .. }
@@ -667,6 +723,32 @@ fn main() {
             tracing::info!("starting MCP server");
             commands::mcp::run();
             Ok(())
+        }
+        Commands::Serve {
+            port,
+            host,
+            mut api_key,
+            backend,
+            api,
+        } => {
+            tracing::info!("starting HTTP serve");
+            // Also check VERA_SERVE_KEY env var.
+            if api_key.is_none() {
+                api_key = std::env::var("VERA_SERVE_KEY").ok();
+            }
+            let resolved_backend = if api {
+                vera_core::config::InferenceBackend::Api
+            } else {
+                vera_core::config::resolve_backend(backend.explicit_backend())
+            };
+            let config = match helpers::load_runtime_config() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error loading config: {e:#}");
+                    process::exit(1);
+                }
+            };
+            commands::serve::run(&host, port, api_key, resolved_backend, config)
         }
         Commands::Agent {
             command,
@@ -1287,7 +1369,7 @@ mod tests {
     #[test]
     fn cli_parses_stats_command() {
         let cli = Cli::parse_from(["vera", "stats"]);
-        assert!(matches!(cli.command, Commands::Stats));
+        assert!(matches!(cli.command, Commands::Stats { .. }));
     }
 
     #[test]
