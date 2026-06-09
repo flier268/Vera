@@ -193,26 +193,6 @@ impl LocalReranker {
         Ok(results)
     }
 
-    fn do_rerank(&self, query: &str, documents: &[String]) -> Result<Vec<RerankScore>> {
-        if documents.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut combined = Vec::with_capacity(documents.len());
-        for (batch_index, batch) in documents.chunks(MAX_RERANK_BATCH_SIZE).enumerate() {
-            let mut scores =
-                self.do_rerank_batch(query, batch, batch_index * MAX_RERANK_BATCH_SIZE)?;
-            combined.append(&mut scores);
-        }
-
-        combined.sort_by(|a, b| {
-            b.relevance_score
-                .partial_cmp(&a.relevance_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(combined)
-    }
-
     fn do_rerank_cancellable(
         &self,
         query: &str,
@@ -331,12 +311,7 @@ impl Reranker for LocalReranker {
         let documents = documents.to_vec();
 
         task::spawn_blocking(move || {
-            provider
-                .do_rerank(&query, &documents)
-                .map_err(|e| RerankerError::ApiError {
-                    status: 500,
-                    message: e.to_string(),
-                })
+            provider.do_rerank_cancellable(&query, &documents, &CancellationToken::new())
         })
         .await
         .map_err(|e| RerankerError::ApiError {

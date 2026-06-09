@@ -445,6 +445,9 @@ impl LocalEmbeddingProvider {
         }
 
         if self.batch_scaler.is_none() {
+            if cancel.is_cancelled() {
+                return Err(EmbeddingError::Cancelled);
+            }
             return self
                 .do_embed_once(&encodings)
                 .map_err(|e| EmbeddingError::ApiError {
