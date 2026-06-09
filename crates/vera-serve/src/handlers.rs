@@ -74,10 +74,9 @@ pub async fn embeddings(
     }
 
     let provider = Arc::clone(&state.embedding_provider);
-    let texts = req.input.clone();
-    let total_chars: usize = texts.iter().map(|s| s.len()).sum();
+    let total_chars: usize = req.input.iter().map(|s| s.len()).sum();
 
-    match provider.embed_batch(&texts).await {
+    match provider.embed_batch(&req.input).await {
         Ok(vecs) => {
             let data: Vec<EmbeddingObject> = vecs
                 .into_iter()
@@ -130,11 +129,9 @@ pub async fn rerank(
     };
 
     let reranker = Arc::clone(reranker);
-    let query = req.query.clone();
-    let documents = req.documents.clone();
     let top_n = req.top_n;
 
-    match reranker.rerank(&query, &documents).await {
+    match reranker.rerank(&req.query, &req.documents).await {
         Ok(mut scores) => {
             scores.sort_by(|a, b| b.relevance_score.total_cmp(&a.relevance_score));
             if let Some(n) = top_n {
