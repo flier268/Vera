@@ -22,19 +22,17 @@ use axum::{
     routing::{get, post},
 };
 use vera_core::config::{InferenceBackend, VeraConfig};
-use vera_core::embedding::DynamicProvider;
-use vera_core::retrieval::DynamicReranker;
 
 /// Shared state injected into every handler.
 pub struct AppState {
     pub api_key: Option<String>,
-    /// Pre-loaded embedding model (ready at startup, not per-request).
-    pub embedding_provider: Arc<DynamicProvider>,
-    /// Pre-loaded reranker (optional — absent when reranking is disabled or unavailable).
-    pub reranker: Option<Arc<DynamicReranker>>,
+    /// Config used to create providers on-demand per request.
+    pub config: VeraConfig,
+    pub backend: InferenceBackend,
     /// Human-readable model name reported in /v1/health and embeddings responses.
     pub model_name: String,
-    pub backend: InferenceBackend,
+    /// Whether a reranker is available (probed at startup).
+    pub reranker_available: bool,
 }
 
 /// Start the Vera HTTP server.
@@ -59,21 +57,24 @@ pub async fn run_server(
         backend_label(backend)
     );
 
-    let (embedding_provider, model_name) =
+    // Probe-load to validate config and obtain the model name, then release immediately.
+    let (probe, model_name) =
         vera_core::embedding::create_dynamic_provider(&config, backend)
             .await
             .map_err(|e| anyhow::anyhow!("failed to load embedding model: {e}"))?;
+    drop(probe);
 
     eprintln!("vera serve: embedding model ready ({})", model_name);
 
-    let reranker = vera_core::retrieval::create_dynamic_reranker(&config, backend)
+    let reranker_available = vera_core::retrieval::create_dynamic_reranker(&config, backend)
         .await
         .unwrap_or_else(|e| {
             eprintln!("vera serve: reranker unavailable ({e}), reranking disabled");
             None
-        });
+        })
+        .is_some();
 
-    if reranker.is_some() {
+    if reranker_available {
         eprintln!("vera serve: reranker ready");
     }
 
@@ -87,10 +88,10 @@ pub async fn run_server(
 
     let state = Arc::new(AppState {
         api_key,
-        embedding_provider: Arc::new(embedding_provider),
-        reranker: reranker.map(Arc::new),
-        model_name,
+        config,
         backend,
+        model_name,
+        reranker_available,
     });
 
     let app = Router::new()

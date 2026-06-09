@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::error;
 use vera_core::embedding::{EmbeddingError, EmbeddingProvider};
 use vera_core::retrieval::{Reranker, RerankerError};
+use vera_core::retrieval::create_dynamic_reranker;
 
 use crate::{
     AppState,
@@ -75,8 +76,22 @@ pub async fn embeddings(
             .into_response();
     }
 
-    let provider = Arc::clone(&state.embedding_provider);
     let total_chars: usize = req.input.iter().map(|s| s.len()).sum();
+
+    let (provider, _) =
+        match vera_core::embedding::create_dynamic_provider(&state.config, state.backend).await {
+            Ok(p) => p,
+            Err(e) => {
+                error!(error = %e, "failed to load embedding model");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ApiError {
+                        error: "embedding model unavailable".into(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
 
     let cancel = CancellationToken::new();
     let _guard = cancel.clone().drop_guard();
@@ -133,7 +148,7 @@ pub async fn rerank(
     if let Some(err) = check_auth(&state, &headers) {
         return err.into_response();
     }
-    let Some(ref reranker) = state.reranker else {
+    if !state.reranker_available {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError {
@@ -141,9 +156,31 @@ pub async fn rerank(
             }),
         )
             .into_response();
+    }
+
+    let reranker = match create_dynamic_reranker(&state.config, state.backend).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    error: "reranker not available on this server".into(),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            error!(error = %e, "failed to load reranker");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    error: "reranker unavailable".into(),
+                }),
+            )
+                .into_response();
+        }
     };
 
-    let reranker = Arc::clone(reranker);
     let top_n = req.top_n;
 
     let cancel = CancellationToken::new();
