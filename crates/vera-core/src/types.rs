@@ -170,11 +170,10 @@ fn glob_match_recursive(pattern: &str, text: &str) -> bool {
         return false;
     }
 
-    if pattern.is_empty() && text.is_empty() {
-        return true;
-    }
     if pattern.is_empty() {
-        return false;
+        // An exhausted pattern matches the empty text, or any remaining path
+        // beneath it (directory-prefix semantics: "app/src" matches "app/src/foo.ts").
+        return text.is_empty() || text.starts_with('/');
     }
 
     // Handle `*` within a segment (matches anything except `/`).
@@ -1244,6 +1243,22 @@ mod tests {
         assert!(filters.matches(&deep));
         assert!(filters.matches(&top));
         assert!(!filters.matches(&no_match));
+    }
+
+    #[test]
+    fn filter_by_path_plain_directory_prefix() {
+        let filters = SearchFilters {
+            path_glob: Some("app/src".to_string()),
+            ..Default::default()
+        };
+        let inside = make_test_result("app/src/foo.ts", Language::TypeScript, None, None);
+        let deep = make_test_result("app/src/bar/baz.rs", Language::Rust, None, None);
+        let sibling = make_test_result("app/srcs/foo.ts", Language::TypeScript, None, None);
+        let other = make_test_result("other/src/foo.ts", Language::TypeScript, None, None);
+        assert!(filters.matches(&inside));
+        assert!(filters.matches(&deep));
+        assert!(!filters.matches(&sibling));
+        assert!(!filters.matches(&other));
     }
 
     #[test]
