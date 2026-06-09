@@ -145,7 +145,19 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     let pattern = pattern.replace('\\', "/");
     let path = path.replace('\\', "/");
 
-    glob_match_recursive(&pattern, &path)
+    if glob_match_recursive(&pattern, &path) {
+        return true;
+    }
+
+    // Directory-prefix fallback: a bare pattern with no wildcards (e.g. "app/src")
+    // should match any file beneath that directory ("app/src/foo.ts").
+    // This is intentionally kept out of the recursive matcher so that wildcard
+    // handlers like `*` retain strict single-segment semantics.
+    if !pattern.contains(['*', '?', '[']) {
+        return path.starts_with(&format!("{pattern}/"));
+    }
+
+    false
 }
 
 /// Recursive glob matching helper.
@@ -170,10 +182,11 @@ fn glob_match_recursive(pattern: &str, text: &str) -> bool {
         return false;
     }
 
+    if pattern.is_empty() && text.is_empty() {
+        return true;
+    }
     if pattern.is_empty() {
-        // An exhausted pattern matches the empty text, or any remaining path
-        // beneath it (directory-prefix semantics: "app/src" matches "app/src/foo.ts").
-        return text.is_empty() || text.starts_with('/');
+        return false;
     }
 
     // Handle `*` within a segment (matches anything except `/`).
@@ -1259,6 +1272,19 @@ mod tests {
         assert!(filters.matches(&deep));
         assert!(!filters.matches(&sibling));
         assert!(!filters.matches(&other));
+    }
+
+    #[test]
+    fn single_star_does_not_cross_directory_boundary() {
+        // `src/*` must not match `src/bar/baz` — `*` is single-segment only.
+        let filters = SearchFilters {
+            path_glob: Some("src/*".to_string()),
+            ..Default::default()
+        };
+        let shallow = make_test_result("src/foo.rs", Language::Rust, None, None);
+        let deep = make_test_result("src/bar/baz.rs", Language::Rust, None, None);
+        assert!(filters.matches(&shallow));
+        assert!(!filters.matches(&deep));
     }
 
     #[test]
