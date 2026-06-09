@@ -8,9 +8,10 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::error;
-use vera_core::embedding::EmbeddingProvider;
-use vera_core::retrieval::Reranker;
+use vera_core::embedding::{EmbeddingError, EmbeddingProvider};
+use vera_core::retrieval::{Reranker, RerankerError};
 
 use crate::{
     AppState,
@@ -77,7 +78,10 @@ pub async fn embeddings(
     let provider = Arc::clone(&state.embedding_provider);
     let total_chars: usize = req.input.iter().map(|s| s.len()).sum();
 
-    match provider.embed_batch(&req.input).await {
+    let cancel = CancellationToken::new();
+    let _guard = cancel.clone().drop_guard();
+
+    match provider.embed_batch_cancellable(&req.input, &cancel).await {
         Ok(vecs) => {
             let data: Vec<EmbeddingObject> = vecs
                 .into_iter()
@@ -99,6 +103,13 @@ pub async fn embeddings(
             })
             .into_response()
         }
+        Err(EmbeddingError::Cancelled) => (
+            StatusCode::from_u16(499).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(ApiError {
+                error: "request cancelled".into(),
+            }),
+        )
+            .into_response(),
         Err(e) => {
             error!(error = %e, "embedding inference failed");
             (
@@ -135,7 +146,13 @@ pub async fn rerank(
     let reranker = Arc::clone(reranker);
     let top_n = req.top_n;
 
-    match reranker.rerank(&req.query, &req.documents).await {
+    let cancel = CancellationToken::new();
+    let _guard = cancel.clone().drop_guard();
+
+    match reranker
+        .rerank_cancellable(&req.query, &req.documents, &cancel)
+        .await
+    {
         Ok(mut scores) => {
             scores.sort_by(|a, b| b.relevance_score.total_cmp(&a.relevance_score));
             if let Some(n) = top_n {
@@ -150,6 +167,13 @@ pub async fn rerank(
                 .collect();
             Json(RerankResponse { results }).into_response()
         }
+        Err(RerankerError::Cancelled) => (
+            StatusCode::from_u16(499).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(ApiError {
+                error: "request cancelled".into(),
+            }),
+        )
+            .into_response(),
         Err(e) => {
             error!(error = %e, "rerank inference failed");
             (

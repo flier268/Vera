@@ -5,6 +5,7 @@ use crate::retrieval::reranker::{
 };
 use anyhow::Result;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 pub enum DynamicReranker {
     Api(ApiReranker),
@@ -20,6 +21,18 @@ impl Reranker for DynamicReranker {
         match self {
             Self::Api(p) => p.rerank(query, documents).await,
             Self::Local(p) => p.rerank(query, documents).await,
+        }
+    }
+
+    async fn rerank_cancellable(
+        &self,
+        query: &str,
+        documents: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<RerankScore>, RerankerError> {
+        match self {
+            Self::Api(p) => p.rerank_cancellable(query, documents, cancel).await,
+            Self::Local(p) => p.rerank_cancellable(query, documents, cancel).await,
         }
     }
 }

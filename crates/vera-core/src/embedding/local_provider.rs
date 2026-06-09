@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokenizers::{Encoding, Tokenizer};
 use tokio::task;
+use tokio_util::sync::CancellationToken;
 
 const ADAPTIVE_BATCH_SCALER_STATE_VERSION: u32 = 1;
 
@@ -421,6 +422,66 @@ impl LocalEmbeddingProvider {
             );
             let mut batch = self.embed_with_adaptive_batching(&encodings[start..end])?;
             results.append(&mut batch);
+            start = end;
+        }
+
+        Ok(results)
+    }
+
+    fn do_embed_cancellable(
+        &self,
+        texts: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let encodings = self
+            .tokenize_texts(texts)
+            .map_err(|e| EmbeddingError::ApiError {
+                status: 500,
+                message: e.to_string(),
+            })?;
+
+        if encodings.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if self.batch_scaler.is_none() {
+            return self
+                .do_embed_once(&encodings)
+                .map_err(|e| EmbeddingError::ApiError {
+                    status: 500,
+                    message: e.to_string(),
+                });
+        }
+
+        let mut results = Vec::with_capacity(encodings.len());
+        let mut start = 0;
+        while start < encodings.len() {
+            if cancel.is_cancelled() {
+                return Err(EmbeddingError::Cancelled);
+            }
+            let remaining = &encodings[start..];
+            let seq_len = batch_max_len(remaining);
+            let planned_batch_len = self
+                .batch_scaler
+                .as_ref()
+                .unwrap()
+                .recommend_batch_len(remaining.len(), seq_len)
+                .min(remaining.len())
+                .max(1);
+            let end = start + planned_batch_len;
+            tracing::debug!(
+                requested_batch_size = remaining.len(),
+                planned_batch_size = planned_batch_len,
+                seq_len,
+                "planning local ONNX embedding sub-batch"
+            );
+            let batch = self
+                .embed_with_adaptive_batching(&encodings[start..end])
+                .map_err(|e| EmbeddingError::ApiError {
+                    status: 500,
+                    message: e.to_string(),
+                })?;
+            results.extend(batch);
             start = end;
         }
 
@@ -880,6 +941,26 @@ impl EmbeddingProvider for LocalEmbeddingProvider {
             status: 500,
             message: e.to_string(),
         })?
+    }
+
+    async fn embed_batch_cancellable(
+        &self,
+        texts: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let provider = self.clone();
+        let texts = texts.to_vec();
+        let cancel = cancel.clone();
+
+        task::spawn_blocking(move || provider.do_embed_cancellable(&texts, &cancel))
+            .await
+            .map_err(|e| EmbeddingError::ApiError {
+                status: 500,
+                message: e.to_string(),
+            })?
     }
 }
 

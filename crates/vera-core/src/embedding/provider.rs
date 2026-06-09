@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::chunk_text;
@@ -36,6 +37,10 @@ pub enum EmbeddingError {
     /// Unexpected response format.
     #[error("unexpected embedding API response: {message}")]
     ResponseError { message: String },
+
+    /// Request was cancelled because the client disconnected.
+    #[error("embedding cancelled")]
+    Cancelled,
 }
 
 // ── Provider trait ───────────────────────────────────────────────────
@@ -64,6 +69,21 @@ pub trait EmbeddingProvider: Send + Sync {
     /// `None` means Vera should use the configured batch size as-is.
     fn max_batch_size(&self) -> Option<usize> {
         None
+    }
+
+    /// Like `embed_batch`, but aborts between sub-batches if `cancel` is fired.
+    ///
+    /// The default implementation ignores the token and delegates to `embed_batch`.
+    /// Providers that run blocking inference in sub-batch loops should override this
+    /// to check `cancel.is_cancelled()` between iterations so client disconnects
+    /// stop GPU work without waiting for the entire request to finish.
+    async fn embed_batch_cancellable(
+        &self,
+        texts: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let _ = cancel;
+        self.embed_batch(texts).await
     }
 }
 
@@ -588,6 +608,7 @@ fn embedding_error_message(error: &EmbeddingError) -> &str {
         | EmbeddingError::ApiError { message, .. }
         | EmbeddingError::RateLimitError { message }
         | EmbeddingError::ResponseError { message } => message,
+        EmbeddingError::Cancelled => "embedding cancelled",
     }
 }
 
@@ -1113,6 +1134,7 @@ pub(crate) mod test_helpers {
                     EmbeddingError::ResponseError { message } => EmbeddingError::ResponseError {
                         message: message.clone(),
                     },
+                    EmbeddingError::Cancelled => EmbeddingError::Cancelled,
                 });
             }
 

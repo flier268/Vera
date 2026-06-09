@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::chunk_text::{file_name, normalize_path_tokens};
@@ -43,6 +44,10 @@ pub enum RerankerError {
     /// Unexpected response format.
     #[error("unexpected reranker API response: {message}")]
     ResponseError { message: String },
+
+    /// Request was cancelled because the client disconnected.
+    #[error("rerank cancelled")]
+    Cancelled,
 }
 
 // ── Reranker trait ───────────────────────────────────────────────────
@@ -63,6 +68,19 @@ pub trait Reranker: Send + Sync {
         query: &str,
         documents: &[String],
     ) -> Result<Vec<RerankScore>, RerankerError>;
+
+    /// Like `rerank`, but aborts between batches if `cancel` is fired.
+    ///
+    /// The default implementation ignores the token and delegates to `rerank`.
+    async fn rerank_cancellable(
+        &self,
+        query: &str,
+        documents: &[String],
+        cancel: &CancellationToken,
+    ) -> Result<Vec<RerankScore>, RerankerError> {
+        let _ = cancel;
+        self.rerank(query, documents).await
+    }
 }
 
 /// A single reranking score for a document.
@@ -579,6 +597,7 @@ pub(crate) mod test_helpers {
                     RerankerError::ResponseError { message } => RerankerError::ResponseError {
                         message: message.clone(),
                     },
+                    RerankerError::Cancelled => RerankerError::Cancelled,
                 });
             }
 
