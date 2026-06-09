@@ -77,6 +77,14 @@ pub async fn run_server(
         eprintln!("vera serve: reranker ready");
     }
 
+    let api_key = api_key.filter(|k| !k.is_empty());
+
+    if api_key.is_some() {
+        eprintln!("vera serve: API key authentication enabled");
+    } else {
+        eprintln!("vera serve: no API key set — unauthenticated access allowed");
+    }
+
     let state = Arc::new(AppState {
         api_key,
         embedding_provider: Arc::new(embedding_provider),

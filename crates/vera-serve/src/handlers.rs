@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use tracing::error;
 use vera_core::embedding::EmbeddingProvider;
 use vera_core::retrieval::Reranker;
 
@@ -98,13 +99,16 @@ pub async fn embeddings(
             })
             .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            error!(error = %e, "embedding inference failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal server error".into(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -146,13 +150,16 @@ pub async fn rerank(
                 .collect();
             Json(RerankResponse { results }).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            error!(error = %e, "rerank inference failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal server error".into(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
