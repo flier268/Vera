@@ -1,6 +1,7 @@
 //! Axum route handlers for the Vera HTTP API.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     Json,
@@ -10,17 +11,72 @@ use axum::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::error;
-use vera_core::embedding::{EmbeddingError, EmbeddingProvider};
-use vera_core::retrieval::{Reranker, RerankerError};
-use vera_core::retrieval::create_dynamic_reranker;
+use vera_core::embedding::{DynamicProvider, EmbeddingError, EmbeddingProvider};
+use vera_core::retrieval::{DynamicReranker, Reranker, RerankerError};
 
 use crate::{
-    AppState,
+    AppState, CachedProviders,
     types::{
         ApiError, EmbeddingObject, EmbeddingsRequest, EmbeddingsResponse, EmbeddingsUsage,
         HealthResponse, RerankRequest, RerankResponse, RerankResult,
     },
 };
+
+// ── Provider cache helpers ────────────────────────────────────────────────────
+
+type ProviderPair = (Arc<DynamicProvider>, Option<Arc<DynamicReranker>>);
+type AcquireError = (StatusCode, Json<ApiError>);
+
+async fn load_fresh(state: &AppState) -> Result<ProviderPair, AcquireError> {
+    let (embedding, _) =
+        vera_core::embedding::create_dynamic_provider(&state.config, state.backend)
+            .await
+            .map_err(|e| {
+                error!(error = %e, "failed to load embedding model");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ApiError {
+                        error: "embedding model unavailable".into(),
+                    }),
+                )
+            })?;
+    let reranker = if state.reranker_available {
+        vera_core::retrieval::create_dynamic_reranker(&state.config, state.backend)
+            .await
+            .unwrap_or_else(|e| {
+                error!(error = %e, "failed to load reranker");
+                None
+            })
+            .map(Arc::new)
+    } else {
+        None
+    };
+    Ok((Arc::new(embedding), reranker))
+}
+
+/// Acquire providers: per-request (no cache) or from the idle cache.
+async fn acquire_providers(state: &AppState) -> Result<ProviderPair, AcquireError> {
+    if state.idle_timeout.is_none() {
+        // Cache disabled — load fresh, drop when handler returns.
+        return load_fresh(state).await;
+    }
+
+    let mut guard = state.provider_cache.lock().await;
+    if guard.is_none() {
+        let (embedding, reranker) = load_fresh(state).await?;
+        *guard = Some(CachedProviders {
+            embedding,
+            reranker,
+            last_used: Instant::now(),
+        });
+    }
+    let cached = guard.as_mut().unwrap();
+    cached.last_used = Instant::now();
+    Ok((
+        Arc::clone(&cached.embedding),
+        cached.reranker.as_ref().map(Arc::clone),
+    ))
+}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -78,20 +134,10 @@ pub async fn embeddings(
 
     let total_chars: usize = req.input.iter().map(|s| s.len()).sum();
 
-    let (provider, _) =
-        match vera_core::embedding::create_dynamic_provider(&state.config, state.backend).await {
-            Ok(p) => p,
-            Err(e) => {
-                error!(error = %e, "failed to load embedding model");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ApiError {
-                        error: "embedding model unavailable".into(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    let (provider, _) = match acquire_providers(&state).await {
+        Ok(p) => p,
+        Err((status, body)) => return (status, body).into_response(),
+    };
 
     let cancel = CancellationToken::new();
     let _guard = cancel.clone().drop_guard();
@@ -158,27 +204,18 @@ pub async fn rerank(
             .into_response();
     }
 
-    let reranker = match create_dynamic_reranker(&state.config, state.backend).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError {
-                    error: "reranker not available on this server".into(),
-                }),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            error!(error = %e, "failed to load reranker");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError {
-                    error: "reranker unavailable".into(),
-                }),
-            )
-                .into_response();
-        }
+    let (_, reranker_opt) = match acquire_providers(&state).await {
+        Ok(p) => p,
+        Err((status, body)) => return (status, body).into_response(),
+    };
+    let Some(reranker) = reranker_opt else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError {
+                error: "reranker not available on this server".into(),
+            }),
+        )
+            .into_response();
     };
 
     let top_n = req.top_n;

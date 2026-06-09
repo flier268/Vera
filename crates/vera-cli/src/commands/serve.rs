@@ -10,7 +10,21 @@ pub fn run(
     api_key: Option<String>,
     backend: InferenceBackend,
     config: VeraConfig,
+    idle_timeout_secs: i64,
 ) -> Result<()> {
+    let idle_timeout = match idle_timeout_secs {
+        0 => None,
+        -1 => Some(std::time::Duration::MAX),
+        n if n > 0 => Some(std::time::Duration::from_secs(n as u64)),
+        _ => None,
+    };
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(vera_serve::run_server(config, backend, api_key, host, port))
+    rt.block_on(vera_serve::run_server(
+        config,
+        backend,
+        api_key,
+        host,
+        port,
+        idle_timeout,
+    ))
 }

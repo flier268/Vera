@@ -137,6 +137,12 @@ enum Commands {
         #[arg(long)]
         api_key: Option<String>,
 
+        /// Seconds of inactivity before the model is unloaded from memory.
+        /// 0 = disable cache (reload per request, same behaviour as vera search).
+        /// -1 = keep loaded indefinitely.
+        #[arg(long, default_value = "0")]
+        idle_timeout: i64,
+
         #[command(flatten)]
         backend: helpers::LocalBackendFlags,
 
@@ -728,6 +734,7 @@ fn main() {
             port,
             host,
             mut api_key,
+            idle_timeout,
             backend,
             api,
         } => {
@@ -748,7 +755,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            commands::serve::run(&host, port, api_key, resolved_backend, config)
+            commands::serve::run(&host, port, api_key, resolved_backend, config, idle_timeout)
         }
         Commands::Agent {
             command,
